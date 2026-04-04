@@ -1,0 +1,5 @@
+gymnasium
+numpy
+pygame
+stable-baselines3[extra]
+tensorboard
