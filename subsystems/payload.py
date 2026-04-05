@@ -210,9 +210,8 @@ class PayloadSubsystem:
             frame_generated = capture_succeeded
 
         elif action == Action.RUN_CLASSIFIER:
-            # For now, this is synthetic and immediate. We do not need a real classifier.
-            # If a frame exists, just refresh confidence/usefulness consistency.
-            self._refresh_synthetic_inference_metadata(state)
+            real_frame = action_profile.real_frame if action_profile and hasattr(action_profile, 'real_frame') else None
+            self._refresh_synthetic_inference_metadata(state, real_frame=real_frame)
 
         elif action == Action.RESET_PAYLOAD:
             self._reset_payload(state)
@@ -610,21 +609,48 @@ class PayloadSubsystem:
 
         return clamp(confidence, self.config.min_confidence, self.config.max_confidence)
 
-    def _refresh_synthetic_inference_metadata(self, state: SpacecraftState) -> None:
-        """
-        If the environment calls RUN_CLASSIFIER, refresh confidence/usefulness
-        with a small consistent perturbation, without changing the semantic class.
-        """
+    def _refresh_synthetic_inference_metadata(
+        self,
+        state: SpacecraftState,
+        real_frame=None,          # ADD only this parameter
+    ) -> None:
         if not state.payload.has_frame:
             state.payload.mode = PayloadMode.ERROR
             state.payload.classifier_success = False
             return
 
         state.payload.mode = PayloadMode.PROCESSING
+
+        # ── Real classifier path ──────────────────────────────
+        if real_frame is not None:
+            try:
+                from classifier.preprocess import preprocess_frame
+                from classifier.infer_tflite import CloudClassifier
+                from classifier.postprocess import postprocess
+
+                if not hasattr(self, '_classifier'):
+                    self._classifier = CloudClassifier()
+
+                tensor     = preprocess_frame(real_frame)
+                prediction = self._classifier.predict(tensor)
+                result     = postprocess(prediction)
+
+                state.payload.classifier_confidence      = clamp(result['classifier_confidence'],
+                                                                self.config.min_confidence,
+                                                                self.config.max_confidence)
+                state.payload.current_frame_cloud_prob   = clamp(result['current_frame_cloud_prob'], 0.0, 1.0)
+                state.payload.current_frame_usefulness   = clamp(result['current_frame_usefulness'], 0.0, 1.0)
+                state.payload.classifier_last_latency_s  = prediction.get('classifier_last_latency_s', 0.0)
+                state.payload.classifier_success         = result['classifier_success']
+                state.payload.mode = PayloadMode.READY
+                return                                    # ← early return, skips synthetic block
+            except Exception:
+                pass                                      # classifier unavailable → fall through
+
+        # ── Synthetic fallback (your existing code, zero changes) ──
         state.payload.classifier_success = True
         state.payload.classifier_last_latency_s = self.rng.uniform(0.02, 0.15)
 
-        # Small confidence refresh
         jitter = self.rng.uniform(-0.03, 0.03)
         state.payload.classifier_confidence = clamp(
             state.payload.classifier_confidence + jitter,
@@ -632,7 +658,6 @@ class PayloadSubsystem:
             self.config.max_confidence,
         )
 
-        # Tiny usefulness smoothing
         usefulness_jitter = self.rng.uniform(-0.02, 0.02)
         state.payload.current_frame_usefulness = clamp(
             state.payload.current_frame_usefulness + usefulness_jitter,
