@@ -5,30 +5,39 @@ _MIN_PAYLOAD_TEMP_C = -5.0
 _MAX_PAYLOAD_TEMP_C = 40.0
 IMG_SIZE = 96  # optimal for STM32H743 memory budget
 
-# ── PC training: parse TFRecord from GEE ──────────────────────────────────────
+# ── PC training: parse TFRecord from dataset ──────────────────────────────
 def parse_tfrecord(example_proto):
     feature_description = {
-        'B2': tf.io.FixedLenFeature([65536], tf.float32),  # GEE band: Blue
-        'B3': tf.io.FixedLenFeature([65536], tf.float32),  # Green
-        'B4': tf.io.FixedLenFeature([65536], tf.float32),  # Red
-        'label': tf.io.FixedLenFeature([], tf.int64),
+        'image': tf.io.FixedLenFeature([], tf.string),
+        'label': tf.io.FixedLenFeature([], tf.string),
+        'width': tf.io.FixedLenFeature([], tf.int64),
+        'height': tf.io.FixedLenFeature([], tf.int64),
+        'channels': tf.io.FixedLenFeature([], tf.int64),
     }
     parsed = tf.io.parse_single_example(example_proto, feature_description)
-
-    # Stack bands into (256,256,3), then reshape — GEE exports as flat arrays
-    b2 = tf.reshape(parsed['B2'], [256, 256, 1])
-    b3 = tf.reshape(parsed['B3'], [256, 256, 1])
-    b4 = tf.reshape(parsed['B4'], [256, 256, 1])
-    image = tf.concat([b4, b3, b2], axis=-1)  # RGB order
-
-    label = tf.cast(parsed['label'], tf.float32)
-    return image, label
+    width = tf.cast(parsed['width'], tf.int32)
+    height = tf.cast(parsed['height'], tf.int32)
+    
+    image = tf.io.decode_raw(parsed['image'], tf.float16)
+    image = tf.reshape(image, [height, width, 3])
+    image = tf.cast(image, tf.float32)
+    
+    label = tf.io.decode_raw(parsed['label'], tf.uint8)
+    label = tf.cast(label, tf.float32)
+    
+    # Convert segmentation mask to binary image label (1 if >20% cloud, else 0)
+    img_label = tf.cast(tf.reduce_mean(label) > 0.2, tf.float32)
+    
+    return image, img_label
 
 def preprocess_train(image, label):
     image = tf.image.resize(image, [IMG_SIZE, IMG_SIZE])
-    image = tf.cast(image, tf.float32)
-    # Normalize to [0,1] — GEE Sentinel-2 reflectance is 0–10000
-    image = tf.clip_by_value(image / 10000.0, 0.0, 1.0)
+    # Values might already be reflectance, clip appropriately
+    # Optionally normalize to stretch contrast
+    img_max = tf.reduce_max(image)
+    image = tf.cond(img_max > 0, lambda: image / img_max, lambda: image)
+    image = tf.clip_by_value(image, 0.0, 1.0)
+    
     # Augmentation
     image = tf.image.random_flip_left_right(image)
     image = tf.image.random_flip_up_down(image)
@@ -38,8 +47,9 @@ def preprocess_train(image, label):
 
 def preprocess_val(image, label):
     image = tf.image.resize(image, [IMG_SIZE, IMG_SIZE])
-    image = tf.cast(image, tf.float32)
-    image = tf.clip_by_value(image / 10000.0, 0.0, 1.0)
+    img_max = tf.reduce_max(image)
+    image = tf.cond(img_max > 0, lambda: image / img_max, lambda: image)
+    image = tf.clip_by_value(image, 0.0, 1.0)
     return image, label
 
 def build_dataset(tfrecord_paths, training=True, batch_size=32):
