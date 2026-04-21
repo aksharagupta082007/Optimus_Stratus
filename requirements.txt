@@ -3,3 +3,7 @@ numpy
 pygame
 stable-baselines3[extra]
 tensorboard
+fastapi
+uvicorn
+psutil
+requests
