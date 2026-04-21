@@ -1,0 +1,38 @@
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Virtual Environments ────────────────────────────────
+cubesat_env/
+venv/
+.venv/
+env_*/
+
+# ── Training Checkpoints (keep only best) ──────────────
+models/checkpoints/
+rl/models/checkpoints/
+logs/
+rl/logs/
+outputs/
+
+# ── Training Data (too large for Git) ──────────────────
+data/tfrecords/
+
+# ── IDE / OS ────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+Thumbs.db
+.DS_Store
+
+# ── Misc ────────────────────────────────────────────────
+*.log
+.env

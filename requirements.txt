@@ -1,7 +1,7 @@
 gymnasium
 numpy
 pygame
-stable-baselines3[extra]
+stable-baselines3
 tensorboard
 fastapi
 uvicorn
