@@ -1,77 +1,103 @@
-import tensorflow as tf
+"""
+classifier/preprocess.py
 
-# Mirrors PayloadConfig defaults — update if PayloadConfig changes
-_MIN_PAYLOAD_TEMP_C = -5.0
-_MAX_PAYLOAD_TEMP_C = 40.0
-IMG_SIZE = 96  # optimal for STM32H743 memory budget
+Parses a serialized TFRecord byte-string into a (1, 96, 96, 3) float32
+numpy array in [0, 1], matching the schema used in training.
 
-# ── PC training: parse TFRecord from dataset ──────────────────────────────
-def parse_tfrecord(example_proto):
-    feature_description = {
-        'image': tf.io.FixedLenFeature([], tf.string),
-        'label': tf.io.FixedLenFeature([], tf.string),
-        'width': tf.io.FixedLenFeature([], tf.int64),
-        'height': tf.io.FixedLenFeature([], tf.int64),
-        'channels': tf.io.FixedLenFeature([], tf.int64),
-    }
-    parsed = tf.io.parse_single_example(example_proto, feature_description)
-    width = tf.cast(parsed['width'], tf.int32)
-    height = tf.cast(parsed['height'], tf.int32)
-    
-    image = tf.io.decode_raw(parsed['image'], tf.float16)
-    image = tf.reshape(image, [height, width, 3])
-    image = tf.cast(image, tf.float32)
-    
-    label = tf.io.decode_raw(parsed['label'], tf.uint8)
-    label = tf.cast(label, tf.float32)
-    
-    # Convert segmentation mask to binary image label (1 if >20% cloud, else 0)
-    img_label = tf.cast(tf.reduce_mean(label) > 0.2, tf.float32)
-    
-    return image, img_label
+TFRecord schema (matches optimus_stratus_imageclassifier.py safe_parse):
+    "image"    : bytes_list  — raw float16 pixel data  (H * W * C * 2 bytes)
+    "label"    : bytes_list  — raw uint8 segmentation mask (H * W bytes)
+    "height"   : int64
+    "width"    : int64
+    "channels" : int64
 
-def preprocess_train(image, label):
-    image = tf.image.resize(image, [IMG_SIZE, IMG_SIZE])
-    # Values might already be reflectance, clip appropriately
-    # Optionally normalize to stretch contrast
-    img_max = tf.reduce_max(image)
-    image = tf.cond(img_max > 0, lambda: image / img_max, lambda: image)
-    image = tf.clip_by_value(image, 0.0, 1.0)
-    
-    # Augmentation
-    image = tf.image.random_flip_left_right(image)
-    image = tf.image.random_flip_up_down(image)
-    image = tf.image.random_brightness(image, 0.1)
-    image = tf.image.random_contrast(image, 0.9, 1.1)
-    return image, label
+Binary classification rule (matches Colab training):
+    label = 1.0 (cloudy)      if mean(mask) > 0.2
+    label = 0.0 (non-cloudy)  otherwise
+"""
 
-def preprocess_val(image, label):
-    image = tf.image.resize(image, [IMG_SIZE, IMG_SIZE])
-    img_max = tf.reduce_max(image)
-    image = tf.cond(img_max > 0, lambda: image / img_max, lambda: image)
-    image = tf.clip_by_value(image, 0.0, 1.0)
-    return image, label
+from __future__ import annotations
 
-def build_dataset(tfrecord_paths, training=True, batch_size=32):
-    ds = tf.data.TFRecordDataset(tfrecord_paths, num_parallel_reads=tf.data.AUTOTUNE)
-    ds = ds.map(parse_tfrecord, num_parallel_calls=tf.data.AUTOTUNE)
-    preprocess_fn = preprocess_train if training else preprocess_val
-    ds = ds.map(preprocess_fn, num_parallel_calls=tf.data.AUTOTUNE)
-    if training:
-        ds = ds.shuffle(buffer_size=1000)
-    ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
-    return ds
-
-# ── On-device (STM32 simulation): preprocess a raw numpy frame ────────────────
 import numpy as np
+from typing import Optional, Tuple
 
-def preprocess_frame(raw_frame_rgb: np.ndarray) -> np.ndarray:
+IMG_SIZE: int = 96   # Must match training resolution
+
+
+# ─── Main entry points ────────────────────────────────────────────────────────
+
+def parse_tfrecord_numpy(raw_bytes: bytes) -> Tuple[Optional[np.ndarray], np.float32]:
     """
-    Takes a (H, W, 3) uint8 numpy array from the camera,
-    returns a (1, 96, 96, 3) float32 array ready for TFLite.
-    On actual STM32 this logic is reimplemented in C via STM32CubeAI.
+    Parse one serialised TFRecord into a preprocessed image + label.
+
+    Args:
+        raw_bytes: raw bytes from a single TFRecord file (tf.train.Example format).
+
+    Returns:
+        img   : np.ndarray shape (96, 96, 3) float32 in [0, 1], or None on failure.
+        label : float32  1.0 = cloudy,  0.0 = non-cloudy,  -1.0 = parse error.
     """
-    import cv2
-    img = cv2.resize(raw_frame_rgb, (IMG_SIZE, IMG_SIZE))
-    img = img.astype(np.float32) / 255.0
-    return np.expand_dims(img, axis=0)
+    try:
+        # Import tensorflow only when needed so the rest of the env can run
+        # with a pure numpy stack if TF is not present.
+        import tensorflow as tf
+        from PIL import Image as PILImage
+
+        example = tf.train.Example()
+        example.ParseFromString(raw_bytes)
+        feats = example.features.feature
+
+        h = int(feats["height"].int64_list.value[0])
+        w = int(feats["width"].int64_list.value[0])
+        c = int(feats["channels"].int64_list.value[0])
+
+        img_bytes  = feats["image"].bytes_list.value[0]
+        mask_bytes = feats["label"].bytes_list.value[0]
+
+        # Validate byte counts before reshape
+        expected_img  = h * w * c * 2   # float16 = 2 bytes per element
+        expected_mask = h * w           # uint8   = 1 byte per element
+        if len(img_bytes) != expected_img or len(mask_bytes) != expected_mask:
+            return None, np.float32(-1.0)
+
+        # Decode raw bytes → numpy
+        img  = np.frombuffer(img_bytes,  dtype=np.float16).reshape(h, w, c).astype(np.float32)
+        mask = np.frombuffer(mask_bytes, dtype=np.uint8  ).reshape(h, w  ).astype(np.float32)
+
+        # Normalise image to [0, 1]
+        img_max = img.max()
+        if img_max > 0:
+            img = img / img_max
+        img = np.clip(img, 0.0, 1.0)
+
+        # Resize to 96×96 using PIL (avoids any TF graph dependency)
+        img_96 = np.stack([
+            np.array(
+                PILImage.fromarray(img[:, :, ch]).resize(
+                    (IMG_SIZE, IMG_SIZE), PILImage.Resampling.BILINEAR
+                )
+            )
+            for ch in range(c)
+        ], axis=-1)
+        img_96 = np.clip(img_96, 0.0, 1.0).astype(np.float32)
+
+        # Derive binary label from segmentation mask  (>20% cloudy pixels ⇒ cloudy)
+        label = np.float32(mask.mean() > 0.2)
+
+        return img_96, label
+
+    except Exception:
+        return None, np.float32(-1.0)
+
+
+def prepare_input(img_96: np.ndarray) -> np.ndarray:
+    """
+    Add the batch dimension required by TFLite.
+
+    Args:
+        img_96: np.ndarray shape (96, 96, 3) float32 in [0, 1]
+
+    Returns:
+        np.ndarray shape (1, 96, 96, 3) float32
+    """
+    return np.expand_dims(img_96, axis=0)

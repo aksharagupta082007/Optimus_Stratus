@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
+import numpy as np
+
 from .enums import (
     Action,
     AttitudeMode,
@@ -64,6 +66,9 @@ class ActionEffectProfile:
     requires_pointing_settle: bool = False
     radio_use: bool = False
     payload_use: bool = False
+    # Carries the parsed (96, 96, 3) float32 image for RUN_CLASSIFIER;
+    # None triggers synthetic fallback in payload.py.
+    real_frame: Optional[np.ndarray] = None
 
 
 @dataclass

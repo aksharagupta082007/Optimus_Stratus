@@ -49,7 +49,23 @@ class CubeSatGymWrapper(gym.Env):
         # Force vector observations for flat MLP input
         rl_config = LocalRLConfig(observation_type="vector")
         mission_config = LocalMissionConfig(randomize_initial_phase=True)
-        self.env = CubeSatEnv(rl_config=rl_config, mission_config=mission_config)
+
+        # Point to the local TFRecord training split for real classifier inference
+        _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _tfrecord_dir = os.path.join(_project_root, "data", "tfrecords", "train")
+        if not os.path.isdir(_tfrecord_dir) or not any(
+            f.endswith(".tfrecord")
+            for _, _, files in os.walk(_tfrecord_dir)
+            for f in files
+        ):
+            # Fall back to test split if train is empty (run prepare_data.py first)
+            _tfrecord_dir = os.path.join(_project_root, "data", "tfrecords", "test")
+
+        self.env = CubeSatEnv(
+            rl_config=rl_config,
+            mission_config=mission_config,
+            tfrecord_dir=_tfrecord_dir,
+        )
 
         # Probe the observation shape from a dummy reset
         obs, _ = self.env.reset()

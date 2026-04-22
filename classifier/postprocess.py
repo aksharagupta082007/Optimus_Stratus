@@ -1,42 +1,57 @@
 """
-Translates classifier output into a structured result
-that observation_builder.py can consume.
+classifier/postprocess.py
+
+Maps CloudClassifier.predict() output to the FrameClass enum value and
+the payload state fields consumed by subsystems/payload.py.
+
+Threshold mapping (cloud_prob → FrameClass):
+    >= 0.75   → CLOUDY
+    >= 0.35   → PARTLY_CLOUDY
+    < 0.35 and usefulness >= 0.80  → HIGH_VALUE_CLEAR
+    otherwise → CLEAR
 """
 
-CONFIDENCE_THRESHOLD = 0.70   # below this → treat as uncertain
+from __future__ import annotations
 
-def postprocess(prediction: dict) -> dict:
+from typing import Dict, Any
+
+from models.enums import FrameClass
+
+
+def postprocess(prediction: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Input:  {'label': str, 'confidence': float, 'raw_score': float}
-    Output: structured result for the RL observation
+    Map raw CloudClassifier output to payload state fields.
+
+    Args:
+        prediction: dict returned by CloudClassifier.predict()
+
+    Returns dict with keys:
+        frame_class                FrameClass enum value
+        current_frame_cloud_prob   float  [0, 1]
+        current_frame_usefulness   float  [0, 1]
+        classifier_confidence      float  [0.5, 1.0]
+        classifier_success         bool
+        classifier_last_latency_s  float  (seconds)
     """
-    label      = prediction['label']
-    confidence = prediction['confidence']
-    raw_score  = prediction['raw_score']
+    cloud_prob = float(prediction["current_frame_cloud_prob"])
+    usefulness = float(prediction["current_frame_usefulness"])
+    confidence = float(prediction["classifier_confidence"])
 
-    is_cloudy    = label == 'cloudy'
-    is_uncertain = confidence < CONFIDENCE_THRESHOLD
+    # ── Map continuous cloud probability → FrameClass ─────────────────────
+    if cloud_prob >= 0.75:
+        frame_class = FrameClass.CLOUDY
+    elif cloud_prob >= 0.35:
+        frame_class = FrameClass.PARTLY_CLOUDY
+    elif usefulness >= 0.80:
+        frame_class = FrameClass.HIGH_VALUE_CLEAR
+    else:
+        frame_class = FrameClass.CLEAR
 
-    # Actionable flags for the RL agent
-    worth_downlinking = (not is_cloudy) and (not is_uncertain)
-
-    # CHANGE in postprocess() return dict — ADD usefulness score:
     return {
-        'is_cloudy':                    is_cloudy,
-        'is_uncertain':                 is_uncertain,
-        'classifier_confidence':        round(confidence, 4),
-        'current_frame_cloud_prob':     round(raw_score, 4),
-        'current_frame_usefulness':     0.0 if is_cloudy else round(confidence, 4),
-        'classifier_success':           not is_uncertain,
-        'worth_downlinking':            not is_cloudy and not is_uncertain,  # keep for TransitionContext
-    }
-
-def to_transition_fields(postprocess_result: dict, ground_truth_is_cloudy: bool) -> dict:
-    """
-    Feeds classifier outcome into TransitionContext fields that RewardEngine reads.
-    ground_truth_is_cloudy comes from simulation/cloud_model.py in the env step.
-    """
-    return {
-        'classifier_ran':     True,
-        'classifier_correct': postprocess_result['is_cloudy'] == ground_truth_is_cloudy,
+        "frame_class":                  frame_class,
+        "current_frame_cloud_prob":     cloud_prob,
+        "current_frame_usefulness":     usefulness,
+        "classifier_confidence":        confidence,
+        "classifier_success":           bool(prediction.get("classifier_success", True)),
+        "classifier_last_latency_s":    float(prediction.get("classifier_last_latency_s", 0.0)),
     }

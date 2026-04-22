@@ -624,26 +624,35 @@ class PayloadSubsystem:
         # ── Real classifier path ──────────────────────────────
         if real_frame is not None:
             try:
-                from classifier.preprocess import preprocess_frame
+                from classifier.preprocess   import prepare_input
                 from classifier.infer_tflite import CloudClassifier
-                from classifier.postprocess import postprocess
+                from classifier.postprocess  import postprocess
 
                 if not hasattr(self, '_classifier'):
                     self._classifier = CloudClassifier()
 
-                tensor     = preprocess_frame(real_frame)
-                prediction = self._classifier.predict(tensor)
+                inp        = prepare_input(real_frame)        # (1, 96, 96, 3)
+                prediction = self._classifier.predict(inp)
                 result     = postprocess(prediction)
 
-                state.payload.classifier_confidence      = clamp(result['classifier_confidence'],
-                                                                self.config.min_confidence,
-                                                                self.config.max_confidence)
-                state.payload.current_frame_cloud_prob   = clamp(result['current_frame_cloud_prob'], 0.0, 1.0)
-                state.payload.current_frame_usefulness   = clamp(result['current_frame_usefulness'], 0.0, 1.0)
-                state.payload.classifier_last_latency_s  = prediction.get('classifier_last_latency_s', 0.0)
-                state.payload.classifier_success         = result['classifier_success']
+                state.payload.current_frame_class         = result['frame_class']
+                state.payload.classifier_confidence       = clamp(
+                    result['classifier_confidence'],
+                    self.config.min_confidence,
+                    self.config.max_confidence,
+                )
+                state.payload.current_frame_cloud_prob    = clamp(
+                    result['current_frame_cloud_prob'], 0.0, 1.0
+                )
+                state.payload.current_frame_usefulness    = clamp(
+                    result['current_frame_usefulness'], 0.0, 1.0
+                )
+                state.payload.classifier_last_latency_s   = result.get(
+                    'classifier_last_latency_s', 0.0
+                )
+                state.payload.classifier_success          = result['classifier_success']
                 state.payload.mode = PayloadMode.READY
-                return                                    # ← early return, skips synthetic block
+                return                                    # ← skip synthetic block
             except Exception:
                 pass                                      # classifier unavailable → fall through
 

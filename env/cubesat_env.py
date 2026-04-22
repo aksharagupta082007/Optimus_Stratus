@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+import glob
+import os
+import random as _random
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 import gymnasium as gym
@@ -170,6 +173,7 @@ class CubeSatEnv(gym.Env):
         reward_config: Optional[RewardConfig] = None,
         termination_config: Optional[TerminationConfig] = None,
         observation_config: Optional[ObservationConfig] = None,
+        tfrecord_dir: Optional[str] = None,   # ← path to data/tfrecords/{train|test}
     ) -> None:
         # Use project configs if they are passed; otherwise use local defaults.
         self.mission_config = mission_config or LocalMissionConfig()
@@ -254,6 +258,18 @@ class CubeSatEnv(gym.Env):
 
         self.action_order: List[Action] = list(DEFAULT_ACTION_ORDER)
         self._manual_abort_requested: bool = False
+
+        # ── TFRecord pool for real classifier integration ──────────────────
+        self._tfrecord_files: List[str] = []
+        self._tfrecord_rng = _random.Random(42)
+        if tfrecord_dir and os.path.isdir(tfrecord_dir):
+            self._tfrecord_files = glob.glob(
+                os.path.join(tfrecord_dir, "**", "*.tfrecord"), recursive=True
+            )
+            print(
+                f"[CubeSatEnv] TFRecord pool: {len(self._tfrecord_files)} files "
+                f"from '{tfrecord_dir}'"
+            )
 
         # --- Gymnasium Spaces ---
         self.action_space = spaces.Discrete(len(self.action_order))
@@ -363,12 +379,41 @@ class CubeSatEnv(gym.Env):
         )
 
         # Payload
+        # ── Build an enhanced action_profile when RUN_CLASSIFIER is issued ──
+        action_profile_for_payload = action_profile
+        if effective_action == Action.RUN_CLASSIFIER:
+            raw_bytes = getattr(self.state.payload, 'current_frame_tfrecord_bytes', None)
+            if raw_bytes is not None:
+                try:
+                    from classifier.preprocess import parse_tfrecord_numpy
+                    img_array, _ = parse_tfrecord_numpy(raw_bytes)
+                    if img_array is not None:
+                        action_profile_for_payload = replace(
+                            action_profile, real_frame=img_array
+                        )
+                except Exception:
+                    pass   # fall through to synthetic
+
         payload_breakdown = self.payload.step(
             state=self.state,
             dt_s=self.state.time.dt_s,
             action=effective_action,
-            action_profile=action_profile,
+            action_profile=action_profile_for_payload,
         )
+
+        # ── Sample + store a TFRecord byte-string on successful CAPTURE_IMAGE ─
+        if (
+            effective_action == Action.CAPTURE_IMAGE
+            and payload_breakdown.frame_generated
+            and self._tfrecord_files
+        ):
+            chosen = self._tfrecord_rng.choice(self._tfrecord_files)
+            try:
+                import tensorflow as tf
+                for raw in tf.data.TFRecordDataset([chosen]).take(1):
+                    self.state.payload.current_frame_tfrecord_bytes = raw.numpy()
+            except Exception:
+                self.state.payload.current_frame_tfrecord_bytes = None
 
         # If a frame was generated, ingest raw frame into CDH
         if payload_breakdown.frame_generated and self.state.payload.has_frame:

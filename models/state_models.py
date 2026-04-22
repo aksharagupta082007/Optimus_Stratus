@@ -306,6 +306,9 @@ class PayloadState:
     current_frame_cloud_prob: float = 0.0
     current_frame_usefulness: float = 0.0
     current_frame_class: FrameClass = FrameClass.NONE
+    # Raw TFRecord bytes stored on CAPTURE_IMAGE; consumed by RUN_CLASSIFIER.
+    # Excluded from RL observation; never serialised to disk.
+    current_frame_tfrecord_bytes: Optional[bytes] = None
 
     classifier_confidence: float = 0.0
     classifier_last_latency_s: float = 0.0
@@ -321,6 +324,7 @@ class PayloadState:
         self.current_frame_cloud_prob = 0.0
         self.current_frame_usefulness = 0.0
         self.current_frame_class = FrameClass.NONE
+        self.current_frame_tfrecord_bytes = None
         self.classifier_confidence = 0.0
         self.classifier_last_latency_s = 0.0
         self.classifier_success = True
