@@ -21,17 +21,17 @@ The core of the project relies on a closed-loop system:
 ### Simulation GUI
 The main demonstration environment provides an interactive UI with vital telemetry. It allows tracking of the mission's status, mode, and resource levels.
 
-![CubeSat RL Simulation GUI - System Overview](1.jpg)
+![CubeSat RL Simulation GUI - System Overview](WhatsApp Image 2026-05-06 at 11.04.03 AM (1).jpeg)
 
 ### Agent Inference on Edge Hardware
 The trained model can run on edge hardware (like a Raspberry Pi), making intelligent fault-recovery and operational decisions based on streamed telemetry.
 
-![Raspberry Pi Inference Server Logs](2.jpg)
+![Raspberry Pi Inference Server Logs](WhatsApp Image 2026-05-06 at 11.04.03 AM (2).jpeg)
 
 ### System Telemetry & Fault Monitoring
 The host monitoring console tracks hardware usage, actions taken by the RL policy, and detailed subsystem fault states (e.g., ADCS pointing errors).
 
-![Host Monitoring Console Logs](3.jpg)
+![Host Monitoring Console Logs](WhatsApp Image 2026-05-06 at 11.04.03 AM (3).jpeg)
 
 ## Installation
 
